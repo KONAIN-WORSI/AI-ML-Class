@@ -1,10 +1,30 @@
-from pathlib import Path
+import logging
 import pickle
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
 from keras.models import load_model
 from keras.utils import pad_sequences
+
+
+class _KerasCleanupDeprecationFilter(logging.Filter):
+    _streamlit_keras_cleanup_filter = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.name == "tensorflow"
+            and "The name tf.reset_default_graph is deprecated." in record.getMessage()
+        )
+
+
+# Streamlit clears Keras state after reruns; this dependency pair logs this deprecated alias during cleanup.
+_tensorflow_logger = logging.getLogger("tensorflow")
+if not any(
+    getattr(existing_filter, "_streamlit_keras_cleanup_filter", False)
+    for existing_filter in _tensorflow_logger.filters
+):
+    _tensorflow_logger.addFilter(_KerasCleanupDeprecationFilter())
 
 
 MODEL_PATH = Path(__file__).parent / "gru_model.h5"
@@ -143,7 +163,11 @@ prompt = st.text_area(
 )
 word_count = st.slider("Words to generate", min_value=1, max_value=20, value=10)
 
-if st.button("Predict next word", type="primary", use_container_width=True):
+if "prediction" not in st.session_state:
+    st.session_state.prediction = None
+
+if st.button("Predict next word", type="primary", width="stretch"):
+    st.session_state.prediction = None
     if not prompt.strip():
         st.warning("Enter a starting phrase to get a prediction.")
     else:
@@ -155,15 +179,21 @@ if st.button("Predict next word", type="primary", use_container_width=True):
                 "Try different words."
             )
         else:
-            generated_words = predict_words(
-                model,
-                tokenizer,
-                prompt,
-                max_length,
-                word_count,
-            )
+            with st.spinner("Generating your prediction..."):
+                generated_words = predict_words(
+                    model,
+                    tokenizer,
+                    prompt,
+                    max_length,
+                    word_count,
+                )
             if not generated_words:
                 st.info("The model did not return a word for this phrase.")
             else:
-                st.markdown("#### Prediction")
-                st.write(f"{prompt.rstrip()} {' '.join(generated_words)}")
+                st.session_state.prediction = (
+                    f"{prompt.rstrip()} {' '.join(generated_words)}"
+                )
+
+if st.session_state.prediction:
+    st.markdown("#### Prediction")
+    st.success(st.session_state.prediction)
